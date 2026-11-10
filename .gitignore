@@ -1,0 +1,6 @@
+.DS_Store
+*.xisf
+*.fit
+*.fits
+ltmf_temp_*/
+.claude/
