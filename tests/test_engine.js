@@ -312,7 +312,33 @@ function tRun()
    engine = new LTMFEngine( P );
    results = engine.run();
    tFlushLog();
+   var biases = results.filter( function( r )
+   {
+      return r.type == "bias";
+   } );
+   results = results.filter( function( r )
+   {
+      return r.type == "flat";
+   } );
    check( "B: two master flats (one per filter)", results.length == 2, "n=" + results.length );
+   check( "B: one synthetic master bias for both filters", biases.length == 1, "n=" + biases.length );
+   if ( biases.length == 1 )
+   {
+      var biasImage = ltmfReadImage( biases[ 0 ].path );
+      var biasMin = biasImage.minimum() * 65535,
+         biasMax = biasImage.maximum() * 65535;
+      var biasSize = biasImage.width + "x" + biasImage.height;
+      biasImage.free();
+      check( "B: bias is the constant black level", Math.abs( biasMin - 1000 ) < 0.01 && Math.abs( biasMax - 1000 ) < 0.01 && biasSize == "640x480",
+         "min=" + biasMin.toFixed( 3 ) + " max=" + biasMax.toFixed( 3 ) + " ADU, " + biasSize );
+      header = ltmfReadHeader( biases[ 0 ].path );
+      var biasType = "";
+      for ( i = 0; i < header.keywords.length; ++i )
+         if ( header.keywords[ i ].name == "IMAGETYP" )
+            biasType = header.keywords[ i ].strippedValue;
+      check( "B: bias IMAGETYP / binning / file name", biasType.toLowerCase().replace( /\s+/g, "" ) == "masterbias" && header.binning == 2 &&
+         /masterBias_BIN-2_640x480_1000ADU\.xisf$/.test( biases[ 0 ].path ), biasType + " bin=" + header.binning + " " + File.extractNameAndExtension( biases[ 0 ].path ) );
+   }
    for ( i = 0; i < results.length; ++i )
    {
       c = tCompare( results[ i ].path, 1 );
@@ -334,6 +360,51 @@ function tRun()
       c = tCompare( results[ 0 ].path, 1 );
       check( "C: control without masking is clearly worse", c.max > 0.05, "max=" + ( 100 * c.max ).toFixed( 2 ) + "% rms=" + ( 100 * c.rms ).toFixed( 3 ) + "%" );
    }
+
+   // --- テスト E: 黒レベルの自動読み取り
+   // --- Test E: automatic black level
+   // E1: FITS には EXIF がないので、0(自動)のままだとグループごとにエラーになり、何も出力しない
+   // E1: FITS files have no EXIF data, so 0 (automatic) must fail for every group and write nothing
+   P = new LTMFParameters;
+   P.files = files;
+   P.outputDir = dir + "/B";
+   P.prefix = "auto";
+   check( "E: defaults are black level mode, automatic, with bias", P.darkMode == 2 && P.pedestalADU == 0 && P.writeBias, "mode=" + P.darkMode + " ped=" + P.pedestalADU + " bias=" + P.writeBias );
+   engine = new LTMFEngine( P );
+   results = engine.run();
+   tFlushLog();
+   check( "E: automatic black level fails cleanly for FITS", results.length == 0 && tLog.indexOf( "black level could not be read" ) >= 0, "n=" + results.length );
+
+   // E2: DNG の BlackLevel タグ (0xC61A = 512) だけを持つ最小の TIFF を作って読む
+   // E2: read a minimal TIFF that only carries the DNG BlackLevel tag (0xC61A = 512)
+   var dngPath = dir + "/synthetic.dng";
+   var dngWritten = false;
+   try
+   {
+      var hex = "49492A0008000000" + "0300" +
+         "FE00" + "0400" + "01000000" + "00000000" +
+         "0F01" + "0200" + "05000000" + "32000000" +
+         "1AC6" + "0300" + "01000000" + "00020000" +
+         "00000000" + "5465737400";
+      var f = new File;
+      f.createForWriting( dngPath );
+      f.write( ByteArray.fromHex( hex ) );
+      f.close();
+      dngWritten = File.exists( dngPath );
+   }
+   catch ( x )
+   {
+      report.push( "INFO  synthetic DNG could not be written: " + x.message );
+   }
+   if ( dngWritten )
+   {
+      var level = ltmfReadBlackLevel( dngPath );
+      check( "E: DNG BlackLevel tag", level === 512, "level=" + level );
+   }
+   check( "E: Canon ColorData index table", ltmfCanonBlackLevelIndex( 1313, 10 ) == 504 && ltmfCanonBlackLevelIndex( 1560, 14 ) == 556 &&
+      ltmfCanonBlackLevelIndex( 123, 1 ) === null, "" );
+   check( "E: implausible black levels are rejected", ltmfPlausibleBlackLevel( [ 2047, 2048, 2048, 2049 ] ) == 2048 &&
+      ltmfPlausibleBlackLevel( [ 2048, 0, 2048, 2048 ] ) === null && ltmfPlausibleBlackLevel( [ 100, 3000, 100, 100 ] ) === null, "" );
 
    // --- テスト D: ダイアログを両方の言語で生成できること、設定を保存・復元できること
    // --- Test D: the dialog can be built in both languages; settings are saved and restored

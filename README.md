@@ -16,7 +16,8 @@
 - **フィルター・ビニング・画像サイズごとに自動でグループ化**し、グループごとにマスターフラットを 1 枚ずつ出力します。
 - **モノクロ / ベイヤー / X-Trans** に対応。カラーセンサーは CFA の位置ごとに別々に正規化するので、色ごとの周辺減光の違いも保たれます。
 - **ディザリングしていないデータにも対応**：スタック前に各フレームの星をマスクし、さらにスタック後にも残った星を検出して取り除きます。
-- **ダーク / バイアスの減算**：マスターダーク、マスターバイアス、または一定のペデスタル値を指定できます。
+- **合成マスターバイアスも一緒に出力**：ダークもバイアスも撮っていない場合、RAW の EXIF から黒レベルを自動で読み取り（Canon / DNG）、フラットの計算に使うと同時に、同じ値の合成マスターバイアスを WBPP 用に保存します。
+- **ダーク / バイアスの減算**：マスターダークやマスターバイアスがあれば、それを指定することもできます。
 - **日本語 / 英語 切り替え**：ダイアログ上部で切り替えられ、設定は保存されます。
 
 ### 動作環境
@@ -37,20 +38,24 @@
 1. **ライトフレームを追加**します（`ファイルを追加` または `フォルダーを追加`）。  
    必ず**キャリブレーション前・位置合わせ前の生のライト**を使ってください。
 2. **ダーク / バイアスの減算**を選びます。
-   - *マスターダーク または マスターバイアス*（推奨）：WBPP でそのライトに使うマスターダークを指定するのが最良です。
-   - *一定のペデスタル値*：カメラのオフセット（黒レベル）を 16 bit ADU で指定します。
+   - *黒レベル / 一定のペデスタル値*（既定）：ダークもバイアスもない場合に使います。値を `0` のままにすると、RAW の EXIF から黒レベルを自動で読み取ります（Canon のカメラと DNG）。それ以外のカメラや FITS / XISF のフレームでは、カメラのオフセットを 16 bit ADU で入力してください。`合成マスターバイアスも保存する` をオンにしておくと、同じ値のマスターバイアスが出力されます。
+   - *マスターダーク または マスターバイアス*：WBPP でそのライトに使うマスターダークがあるなら、それを指定するのが最良です。
    - *なし*：ライトがすでにダーク減算済みの場合だけ選んでください。
 3. **センサーの種類**は通常「自動判定」のままで構いません。
 4. **出力フォルダー**を選び、**実行**を押します。
-5. 出力された `masterFlat_FILTER-…_BIN-…_幅x高さ.xisf` を **WBPP の Flats タブ**に追加します。
+5. WBPP に追加します。
+   - `masterFlat_FILTER-…_BIN-…_幅x高さ.xisf` → **Flats タブ**
+   - `masterBias_BIN-…_幅x高さ_…ADU.xisf` → **Bias タブ**（ライトをマスターダークでキャリブレーションする場合は不要）
 
-> **ダーク減算は必須です。** オフセットが残ったままだと周辺減光が実際より小さく見積もられ、補正不足になります。特にデジタル一眼の RAW には必ず黒レベル（例：Canon 14 bit 機で 2048 前後）が含まれます。
+> **オフセットの扱いをフラットとライトでそろえることが重要です。** フラットは「黒レベルを引いた後」の信号から作るので、ライトも同じ黒レベルを引いてからフラットで割る必要があります。引かずに割ると、周辺が明るく浮く過補正になります（黒レベルは画面全体で一定なのに、フラットの値は周辺ほど小さいため）。合成マスターバイアスは、そのための「同じ値」を WBPP に渡す手段です。デジタル一眼の RAW には必ず黒レベル（Canon の 14 bit 機で 2048 前後）が含まれます。
 
 ### パラメータ
 
 | 項目 | 既定値 | 説明 |
 |---|---|---|
-| 減算するもの | マスターファイル | マスターダーク / バイアス、一定のペデスタル値、なし |
+| 減算するもの | 黒レベル | 黒レベル（定数）、マスターダーク / バイアス、なし |
+| 黒レベル（ADU） | 0 | 0 = RAW の EXIF から自動で読む（Canon / DNG）。それ以外は 16 bit ADU で入力 |
+| 合成マスターバイアスも保存する | オン | 黒レベルの定数画像を `IMAGETYP = Master Bias` の XISF で保存 |
 | CFA 配列 | 自動判定 | `BAYERPAT` キーワードや CFA プロパティから判定。カメラ RAW はベイヤーとみなします |
 | 星をマスクする | オン | 各フレームで、周囲の背景より明るいピクセルを除外します |
 | しきい値（σ） | 3.0 | 小さいほど多くマスクします |
@@ -76,6 +81,8 @@
 - **大きな星雲・銀河がすべてのフレームで同じ位置にある**と、その淡い部分はマスクしきれずフラットに残ります。複数の対象を混ぜると軽減できます。
 - **平滑化はスケールより小さい構造を弱めます。** 既定値（16 px）では、半径 20 px・深さ 4% の影が約 3.6% に浅くなります。
 - **信号のないチャンネルは復元できません。** たとえばカラーカメラ + ナローバンドフィルターで、ほとんど光が届かない色のフラットは信頼できません。
+- **黒レベルの自動読み取りは Canon と DNG だけ**です。Nikon・Sony・Fuji などの RAW や、天体用カメラの FITS では値を入力してください（入力しないとエラーで止まります）。
+- **合成マスターバイアスは定数画像**です。本物のバイアスにある固定パターンや、ダークの熱ノイズ・アンプグローは補正できません。ダークを撮れるなら、そちらが上です。
 - 入力は **1 チャンネルの生フレーム**（モノクロまたは CFA）だけです。デベイヤー済みの RGB 画像には対応していません。
 - マスクが 50% を超えるフレーム（背景が暗すぎる、雲、星景写真など）は自動的に除外されます。
 
@@ -87,6 +94,8 @@
 | 合成データ（モノクロ FITS、**ディザリングなし**、12 枚、平滑化なし） | RMS 誤差 約 0.6%、最大誤差 約 3%（星マスクなしの対照実験では最大 150% 超） |
 | WBPP が要求するキーワード・XISF 形式 | WBPP のソースコードの判定条件と照合済み |
 | デジタル一眼 RAW（Canon CR2、20〜26 MP） | 読み込み・CFA の自動判定・実行を確認。フラットとしての精度は実写データでは未検証 |
+| 黒レベルの自動読み取り | Canon CR2 133 枚（2 機種）で 2047〜2048 ADU を取得し、画素値の中央値と一致。DNG は合成ファイルでのみ確認、CR3 は未検証 |
+| 合成マスターバイアス | 値・キーワード・ファイル名を自動テストで確認。WBPP に実際に読み込ませる確認は未実施 |
 | X-Trans | 実機データでは未検証 |
 | 処理時間 | 24 MP・8 枚で約 20 秒（Apple Silicon） |
 | Windows / Linux | 未検証 |
@@ -96,12 +105,15 @@
 ### 仕組み
 
 1. ヘッダーを読み、フィルター・ビニング・画像サイズでグループ化する。
-2. 各フレームからダーク（または定数）を引き、CFA の位置ごとの中央値で割って背景をそろえる。
+2. 各フレームからダーク（または黒レベル。EXIF から読んだ場合はグループの平均値）を引き、CFA の位置ごとの中央値で割って背景をそろえる。
 3. 64 px 間隔の格子で局所的な背景とノイズを測り、背景 + kσ を超えるピクセルをマスクして広げる（マスク = 値 0 = 欠損）。
 4. ImageIntegration で、値 0 を欠損として除外しながら棄却つきでスタックする。
 5. 過半数のフレームでマスクされたピクセルを欠損にし、（平滑化しない場合は）スタック上でもう一度残留星を検出する。
 6. CFA の位置ごとにブロック中央値から平滑モデルを作り、欠損を埋める（平滑化する場合は全体をモデルで置き換える）。
 7. CFA の位置ごとに中央値を 0.5 にそろえ、マスターフラットとして書き出す。
+8. 黒レベルを使った場合は、同じ値（ADU / 65535）で埋めた合成マスターバイアスも書き出す。
+
+黒レベルの読み取りと合成バイアスの方式は、同じ作者の [LCP Flat Generator](https://github.com/Geology-cat/pixinsight-lcp-flat-generator) と同じものです。
 
 ### テスト
 
@@ -129,7 +141,8 @@ When you forgot to take flats, your flats do not match, or you could not take th
 - **Automatic grouping** by filter, binning and image size, with one master flat per group.
 - **Monochrome, Bayer and X-Trans** sensors. Colour sensors are normalized separately for every CFA position, so colour-dependent vignetting is preserved.
 - **Works without dithering**: stars are masked in every frame before stacking, and residual stars are detected again on the stack.
-- **Dark / bias subtraction** from a master dark, a master bias, or a constant pedestal.
+- **A synthetic master bias comes with it**: without darks or bias frames, the black level is read from the EXIF data of the raw files (Canon / DNG), used to compute the flat, and saved as a matching synthetic master bias for WBPP.
+- **Dark / bias subtraction** from a master dark or master bias, if you have one.
 - **Japanese / English** user interface, switchable at the top of the dialog (the choice is remembered).
 
 ### Requirements
@@ -150,20 +163,24 @@ To try it without installing, use **SCRIPT > Execute Script File...** and select
 1. **Add light frames** (`Add Files` or `Add Folder`).  
    Use **raw, uncalibrated and unregistered** lights.
 2. Choose the **dark / bias subtraction**.
-   - *Master dark or master bias file* (recommended): ideally the master dark WBPP will use for these lights.
-   - *Constant pedestal value*: the camera offset (black level) in 16-bit ADU.
+   - *Black level / constant pedestal* (default): for when you have neither darks nor bias frames. With the value left at `0`, the black level is read from the EXIF data of the raw files (Canon cameras and DNG). For other cameras, and for FITS / XISF frames, enter the camera offset in 16-bit ADU. With `Also save a synthetic master bias` enabled, a master bias with the same value is written.
+   - *Master dark or master bias file*: if you have the master dark WBPP will use for these lights, that is the best choice.
    - *Nothing*: only if the lights are already dark-subtracted.
 3. Leave **Sensor type** on "Auto detect" in most cases.
 4. Select an **output folder** and click **Run**.
-5. Add the resulting `masterFlat_FILTER-…_BIN-…_WxH.xisf` in the **Flats tab of WBPP**.
+5. Add the results to WBPP.
+   - `masterFlat_FILTER-…_BIN-…_WxH.xisf` → **Flats tab**
+   - `masterBias_BIN-…_WxH_…ADU.xisf` → **Bias tab** (not needed if you calibrate the lights with a master dark)
 
-> **Dark subtraction is essential.** A remaining offset makes the vignetting look weaker than it is, and the lights end up under-corrected. DSLR raw files always contain a black level (about 2048 for 14-bit Canon cameras, for example).
+> **The offset must be handled the same way for the flat and for the lights.** The flat is computed from the signal after removing the black level, so the lights must have the same black level removed before they are divided by the flat. Otherwise the corners come out too bright (over-correction): the black level is constant over the frame, while the flat gets smaller towards the edges. The synthetic master bias is how that same value reaches WBPP. DSLR raw files always contain a black level (about 2048 for 14-bit Canon cameras).
 
 ### Parameters
 
 | Parameter | Default | Description |
 |---|---|---|
-| Subtract | Master file | Master dark / bias, a constant pedestal, or nothing |
+| Subtract | Black level | Black level (constant), master dark / bias, or nothing |
+| Black level (ADU) | 0 | 0 = read from the EXIF data of the raw files (Canon / DNG); otherwise enter it in 16-bit ADU |
+| Also save a synthetic master bias | On | Saves a constant image of the black level as an XISF with `IMAGETYP = Master Bias` |
 | CFA layout | Auto detect | Uses the `BAYERPAT` keyword or the CFA property; camera raw files are assumed to be Bayer |
 | Mask stars | On | Excludes pixels brighter than the local background in every frame |
 | Threshold (sigma) | 3.0 | Lower values mask more |
@@ -189,6 +206,8 @@ This is not a full replacement for real flats. Please keep the following in mind
 - **Large nebulae or galaxies at the same position in every frame** cannot be fully masked; their faint parts remain in the flat. Mixing several targets reduces this.
 - **Smoothing weakens structures smaller than the scale.** With the default (16 px), a shadow of 20 px radius and 4% depth becomes about 3.6% deep.
 - **A channel without signal cannot be recovered**, for example a colour of an OSC camera that a narrowband filter blocks almost completely.
+- **The black level is read automatically for Canon and DNG only.** For Nikon, Sony, Fuji and other raw files, and for FITS frames from astronomy cameras, enter the value (the script stops with an error otherwise).
+- **The synthetic master bias is a constant image.** It cannot correct the fixed pattern of a real bias, nor the thermal signal and amplifier glow that darks remove. Real darks are better if you can take them.
 - Input must be **single-channel raw frames** (monochrome or CFA). Demosaiced RGB images are not supported.
 - Frames that are more than 50% masked (background too faint, clouds, nightscapes ...) are skipped automatically.
 
@@ -200,6 +219,8 @@ This is not a full replacement for real flats. Please keep the following in mind
 | Synthetic data (monochrome FITS, **not dithered**, 12 frames, smoothing off) | RMS error about 0.6%, maximum error about 3% (more than 150% in the control run without star masking) |
 | Keywords and XISF format required by WBPP | Checked against the detection logic in the WBPP source code |
 | DSLR raw files (Canon CR2, 20–26 MP) | Reading, automatic CFA detection and execution confirmed; accuracy as a flat not yet verified with real astrophotos |
+| Automatic black level | 2047–2048 ADU read from 133 Canon CR2 files (two camera models), matching the median pixel values. DNG checked with a synthetic file only; CR3 not verified |
+| Synthetic master bias | Value, keywords and file name covered by the automated test; not yet loaded into WBPP for confirmation |
 | X-Trans | Not verified with real camera data |
 | Processing time | About 20 s for eight 24 MP frames (Apple Silicon) |
 | Windows / Linux | Not tested |
@@ -209,12 +230,15 @@ Please check the result with your own data. Bug reports and suggestions are welc
 ### How it works
 
 1. Read the headers and group the frames by filter, binning and image size.
-2. Subtract the dark (or a constant) from every frame and divide by the median of each CFA position, so all backgrounds match.
+2. Subtract the dark (or the black level; the group mean when it comes from EXIF) from every frame and divide by the median of each CFA position, so all backgrounds match.
 3. Measure the local background and noise on a 64 px grid; mask pixels above background + k sigma and grow the mask (masked = value 0 = missing).
 4. Stack with ImageIntegration and pixel rejection, excluding zeros as missing data.
 5. Treat pixels that were masked in more than half of the frames as missing and, without smoothing, detect residual stars once more on the stack.
 6. Build a smooth model from block medians for every CFA position and fill the missing pixels (with smoothing, the whole image is replaced by the model).
 7. Set the median of every CFA position to 0.5 and write the master flat.
+8. When the black level was used, also write a synthetic master bias filled with the same value (ADU / 65535).
+
+The black level reader and the synthetic bias follow the same approach as [LCP Flat Generator](https://github.com/Geology-cat/pixinsight-lcp-flat-generator) by the same author.
 
 ### Tests
 

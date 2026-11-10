@@ -44,9 +44,13 @@
 #include <pjsr/StdIcon.jsh>
 #include <pjsr/NumericControl.jsh>
 
-#define LTMF_VERSION "1.0.0"
+#define LTMF_VERSION "1.1.0"
 #define LTMF_TITLE   "LightsToMasterFlat"
 #define LTMF_SETTINGS_KEY "LightsToMasterFlat/parameters"
+
+// RAW の黒レベルを探すときに読む、ファイル先頭のバイト数
+// Number of bytes read from the start of a raw file when looking for the black level.
+#define LTMF_EXIF_SCAN_BYTES 524288
 
 // WBPP の既定と同じ入力ヒント(行順・RAW の読み方を WBPP と一致させるため)
 // Same input hints as WBPP's defaults, so row order and raw decoding match WBPP.
@@ -77,16 +81,23 @@ var LTMF_STRINGS = {
       darkMode: "Subtract:",
       darkNone: "Nothing (lights are already dark-subtracted)",
       darkFile: "Master dark or master bias file",
-      darkConst: "Constant pedestal value",
+      darkConst: "Black level / constant pedestal",
       darkPath: "Master file:",
       select: "Select",
       selectDark: "Select a master dark or master bias",
-      pedestal: "Pedestal (16-bit ADU):",
+      pedestal: "Black level (ADU, 0 = from EXIF):",
+      writeBias: "Also save a synthetic master bias",
+      biasTip: "<p>Saves a constant image of the black level as a master bias for WBPP. " +
+         "The lights must be calibrated with the same offset that was removed to compute the flat; " +
+         "use this when you have neither darks nor bias frames.</p>" +
+         "<p>With 0, the black level is read from the EXIF data of the raw files " +
+         "(Canon cameras and DNG files). For other cameras, and for FITS / XISF frames, enter the value.</p>",
       darkTip: "<p>The offset (bias) and dark current must be removed before a flat can be computed, " +
          "otherwise the vignetting is underestimated.</p>" +
-         "<p>Best: the master dark that WBPP will use for these lights. A master bias, or the camera " +
-         "offset as a constant, is a reasonable approximation when the dark current is low.</p>" +
-         "<p>DSLR raw files always contain a black level, so a master dark/bias or a constant is required.</p>",
+         "<p>Best: the master dark that WBPP will use for these lights. Without darks or bias frames, " +
+         "choose the black level: it is read from the raw files automatically and a matching synthetic " +
+         "master bias can be saved for WBPP.</p>" +
+         "<p>DSLR raw files always contain a black level, so one of these is required.</p>",
       grpCfa: "Sensor type",
       cfaMode: "CFA layout:",
       cfaAuto: "Auto detect",
@@ -126,6 +137,10 @@ var LTMF_STRINGS = {
       errNoFiles: "Add at least 3 light frames.",
       errNoOutDir: "Select an output folder.",
       errNoDark: "Select a master dark / bias file, or choose another subtraction mode.",
+      errNoBlack: "Group '%1': the black level could not be read from the files. Enter it as a value in ADU.",
+      logBlackExif: "Black level from EXIF: %1 ADU (%2 of %3 files)",
+      logBlackManual: "Black level (entered value): %1 ADU",
+      logBias: "Synthetic master bias written: %1",
       errFewFrames: "Group '%1': only %2 usable frame(s); at least 3 are required. Skipped.",
       errDarkSize: "The master dark / bias (%1) does not match the size of the frames in group '%2' (%3).",
       errRead: "Cannot read file: %1",
@@ -155,8 +170,10 @@ var LTMF_STRINGS = {
       layoutBayer: "Bayer CFA",
       layoutXtrans: "X-Trans CFA",
       doneTitle: "Finished",
-      doneText: "<p>%1 master flat(s) created:</p>%2<p>Add them to WBPP in the <b>Flats</b> tab " +
+      doneText: "<p>%1 file(s) created:</p>%2<p>Add the master flats to WBPP in the <b>Flats</b> tab " +
          "(they are recognized as master flats automatically).</p>",
+      doneBias: "<p>Add the synthetic master bias in the <b>Bias</b> tab, " +
+         "unless you calibrate the lights with a master dark.</p>",
       failText: "<p>No master flat was created. See the Process Console for details.</p>",
       errorTitle: "Error"
    },
@@ -179,16 +196,23 @@ var LTMF_STRINGS = {
       darkMode: "減算するもの:",
       darkNone: "なし(ライトはダーク減算済み)",
       darkFile: "マスターダーク または マスターバイアス",
-      darkConst: "一定のペデスタル値",
+      darkConst: "黒レベル / 一定のペデスタル値",
       darkPath: "マスターファイル:",
       select: "選択",
       selectDark: "マスターダーク または マスターバイアスを選択",
-      pedestal: "ペデスタル(16 bit ADU):",
+      pedestal: "黒レベル(ADU、0 = EXIF から):",
+      writeBias: "合成マスターバイアスも保存する",
+      biasTip: "<p>黒レベルの定数画像を、WBPP 用のマスターバイアスとして保存します。" +
+         "ライトは、フラットの計算で取り除いたのと同じオフセットでキャリブレーションする必要があります。" +
+         "ダークもバイアスも撮っていないときに使ってください。</p>" +
+         "<p>0 の場合、黒レベルは RAW ファイルの EXIF から読み取ります(Canon のカメラと DNG ファイル)。" +
+         "それ以外のカメラや FITS / XISF のフレームでは、値を入力してください。</p>",
       darkTip: "<p>フラットを求める前に、オフセット(バイアス)とダークを取り除く必要があります。" +
          "取り除かないと周辺減光が実際より小さく見積もられます。</p>" +
-         "<p>最良なのは、WBPP でそのライトに使うマスターダークです。暗電流が小さい場合は、" +
-         "マスターバイアスやカメラのオフセット値(定数)でも十分な近似になります。</p>" +
-         "<p>デジタル一眼の RAW には必ず黒レベルが含まれるので、マスターダーク/バイアスか定数の指定が必要です。</p>",
+         "<p>最良なのは、WBPP でそのライトに使うマスターダークです。ダークもバイアスもない場合は" +
+         "「黒レベル」を選んでください。RAW ファイルから自動で読み取り、対応する合成マスターバイアスを" +
+         "WBPP 用に保存できます。</p>" +
+         "<p>デジタル一眼の RAW には必ず黒レベルが含まれるので、いずれかの指定が必要です。</p>",
       grpCfa: "センサーの種類",
       cfaMode: "CFA 配列:",
       cfaAuto: "自動判定",
@@ -228,6 +252,10 @@ var LTMF_STRINGS = {
       errNoFiles: "ライトフレームを 3 枚以上追加してください。",
       errNoOutDir: "出力フォルダーを選択してください。",
       errNoDark: "マスターダーク / バイアスのファイルを選ぶか、別の減算方法を選んでください。",
+      errNoBlack: "グループ「%1」: ファイルから黒レベルを読み取れませんでした。ADU の値を入力してください。",
+      logBlackExif: "EXIF から読んだ黒レベル: %1 ADU(%3 ファイル中 %2 ファイル)",
+      logBlackManual: "黒レベル(入力値): %1 ADU",
+      logBias: "合成マスターバイアスを書き出しました: %1",
       errFewFrames: "グループ「%1」: 使用できるフレームが %2 枚しかありません(3 枚以上必要)。スキップします。",
       errDarkSize: "マスターダーク / バイアス(%1)が、グループ「%2」のフレームのサイズ(%3)と一致しません。",
       errRead: "ファイルを読み込めません: %1",
@@ -257,8 +285,10 @@ var LTMF_STRINGS = {
       layoutBayer: "ベイヤー CFA",
       layoutXtrans: "X-Trans CFA",
       doneTitle: "完了",
-      doneText: "<p>%1 個のマスターフラットを作成しました:</p>%2<p>WBPP の <b>Flats</b> タブに追加してください" +
+      doneText: "<p>%1 個のファイルを作成しました:</p>%2<p>マスターフラットは WBPP の <b>Flats</b> タブに追加してください" +
          "(自動的にマスターフラットとして認識されます)。</p>",
+      doneBias: "<p>合成マスターバイアスは <b>Bias</b> タブに追加してください" +
+         "(ライトをマスターダークでキャリブレーションする場合は不要です)。</p>",
       failText: "<p>マスターフラットは作成されませんでした。詳細は Process Console を確認してください。</p>",
       errorTitle: "エラー"
    }
@@ -335,9 +365,10 @@ function LTMFParameters()
 {
    this.lang = ltmfGuessLanguage();
    this.files = [];
-   this.darkMode = 1; // 0 = なし none, 1 = マスターファイル master file, 2 = 定数 constant
+   this.darkMode = 2; // 0 = なし none, 1 = マスターファイル master file, 2 = 黒レベル(定数) black level (constant)
    this.darkPath = "";
-   this.pedestalADU = 0;
+   this.pedestalADU = 0; // 0 = RAW の EXIF から読む / 0 = read from the EXIF data of the raw files
+   this.writeBias = true; // 合成マスターバイアスも保存する / also save a synthetic master bias
    this.cfaMode = 0; // 0 = 自動 auto, 1 = モノクロ mono, 2 = ベイヤー Bayer, 3 = X-Trans
    this.maskStars = true;
    this.maskSigma = 3.0;
@@ -858,6 +889,332 @@ function ltmfBuildModel( stack, buffer, p, indicators, bs )
 }
 
 // ----------------------------------------------------------------------------
+// RAW の黒レベル / Black level of raw files
+//
+// PixInsight は RAW を「黒レベルを引かないまま」読み込む(Canon の 14 bit 機で約 2048 ADU)。
+// この値を RAW ファイル内の EXIF(TIFF 構造)から直接読む。対応しているのは
+//   - Canon: MakerNote の ColorData (0x4001) にある PerChannelBlackLevel
+//   - DNG  : BlackLevel タグ (0xC61A)
+// 同じ作者の LCPFlatGenerator (https://github.com/Geology-cat/pixinsight-lcp-flat-generator)
+// の EXIF パーサから、黒レベルに必要な部分だけを移植した。
+//
+// PixInsight loads raw files without subtracting the black level (about 2048 ADU
+// for 14-bit Canon cameras). The value is read directly from the EXIF data (a
+// TIFF structure) inside the raw file. Supported:
+//   - Canon: PerChannelBlackLevel in the ColorData record (0x4001) of the MakerNote
+//   - DNG  : the BlackLevel tag (0xC61A)
+// Ported (black level parts only) from the EXIF parser of LCPFlatGenerator by the
+// same author (https://github.com/Geology-cat/pixinsight-lcp-flat-generator).
+// ----------------------------------------------------------------------------
+
+/*
+ * Canon MakerNote の ColorData (int16u 配列) の中の PerChannelBlackLevel の位置。
+ * ExifTool (Image::ExifTool::Canon, 13.50) の ColorData1-12 の定義による。
+ * 配列の長さで世代が決まり、一部は先頭の ColorDataVersion でさらに分かれる。
+ *
+ * Index of PerChannelBlackLevel inside the Canon ColorData record (int16u array),
+ * after the ColorData1-12 definitions of ExifTool (Image::ExifTool::Canon, 13.50).
+ * The record length selects the generation; some depend on ColorDataVersion too.
+ */
+function ltmfCanonBlackLevelIndex( count, version )
+{
+   switch ( count )
+   {
+      case 796:
+         return 196;
+      case 692:
+      case 674:
+      case 702:
+      case 1227:
+      case 1250:
+      case 1251:
+      case 1337:
+      case 1338:
+      case 1346:
+         return ( version == 4 || version == 5 ) ? 692 : ( ( version == 6 || version == 7 ) ? 715 : ( ( version == 9 ) ? 719 : null ) );
+      case 5120:
+         return ( version == -3 ) ? 264 : ( ( version == -4 ) ? 333 : null );
+      case 1273:
+      case 1275:
+         return 479;
+      case 1312:
+      case 1313:
+      case 1316:
+      case 1506:
+         return ( version == 10 ) ? 504 : ( ( version == 11 ) ? 728 : null );
+      case 1560:
+      case 1592:
+      case 1353:
+      case 1602:
+         return ( version == 14 ) ? 556 : ( ( version < 14 || version == 15 ) ? 778 : null );
+      case 1816:
+      case 1820:
+      case 1824:
+         return 329;
+      case 2024:
+      case 3656:
+         return 343;
+      case 3973:
+         return 363;
+      case 3778:
+         return ( version != 0x41 ) ? 363 : 383;
+      case 4528:
+         return 383;
+      default:
+         return null;
+   }
+}
+
+/*
+ * 黒レベルとして妥当な値の組なら平均を、そうでなければ null を返す
+ * (すべて 0 より大きく 16 bit 未満で、互いにほぼ等しいこと)。
+ * Returns the mean if the values are plausible black levels, otherwise null
+ * (all greater than 0, below 16 bits, and nearly equal).
+ */
+function ltmfPlausibleBlackLevel( values )
+{
+   if ( values.length == 0 )
+      return null;
+   var sum = 0,
+      min = Infinity,
+      max = -Infinity;
+   for ( var i = 0; i < values.length; ++i )
+   {
+      if ( values[ i ] === null || !( values[ i ] > 0 ) || values[ i ] >= 65535 )
+         return null;
+      sum += values[ i ];
+      min = Math.min( min, values[ i ] );
+      max = Math.max( max, values[ i ] );
+   }
+   var mean = sum / values.length;
+   return ( max - min <= 0.1 * mean + 16 ) ? mean : null;
+}
+
+function LTMFByteReader( path )
+{
+   this.file = new File;
+   this.file.openForReading( path );
+   this.size = this.file.size;
+   this.headLength = Math.min( this.size, LTMF_EXIF_SCAN_BYTES );
+   this.head = this.file.read( DataType_ByteArray, this.headLength );
+   this.littleEndian = true;
+
+   this.close = function()
+   {
+      this.file.close();
+   };
+
+   this.bytes = function( offset, count )
+   {
+      if ( offset < 0 || count <= 0 || offset + count > this.size )
+         return null;
+      var out = new Array( count );
+      var i;
+      if ( offset + count <= this.headLength )
+         for ( i = 0; i < count; ++i )
+            out[ i ] = this.head.at( offset + i );
+      else
+      {
+         this.file.position = offset;
+         var data = this.file.read( DataType_ByteArray, count );
+         for ( i = 0; i < count; ++i )
+            out[ i ] = data.at( i );
+      }
+      return out;
+   };
+
+   this.u16 = function( offset )
+   {
+      var b = this.bytes( offset, 2 );
+      if ( b === null )
+         return null;
+      return this.littleEndian ? ( b[ 0 ] | ( b[ 1 ] << 8 ) ) : ( ( b[ 0 ] << 8 ) | b[ 1 ] );
+   };
+
+   this.u32 = function( offset )
+   {
+      var b = this.bytes( offset, 4 );
+      if ( b === null )
+         return null;
+      return this.littleEndian ? ( b[ 0 ] + b[ 1 ] * 256 + b[ 2 ] * 65536 + b[ 3 ] * 16777216 ) :
+         ( b[ 3 ] + b[ 2 ] * 256 + b[ 1 ] * 65536 + b[ 0 ] * 16777216 );
+   };
+
+   /*
+    * base を TIFF の先頭とする IFD を読み、{ タグ: { type, count, offset } } を返す。
+    * Reads an IFD of the TIFF structure starting at base; returns { tag: { type, count, offset } }.
+    */
+   this.readIFD = function( base, ifdOffset )
+   {
+      var typeSize = [ 0, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8 ];
+      var pos = base + ifdOffset;
+      var n = this.u16( pos );
+      if ( n === null || n < 1 || n > 1000 )
+         return null;
+      var tags = {};
+      for ( var i = 0; i < n; ++i )
+      {
+         var e = pos + 2 + 12 * i;
+         var tag = this.u16( e );
+         var type = this.u16( e + 2 );
+         var count = this.u32( e + 4 );
+         if ( tag === null || type === null || count === null || type < 1 || type > 12 )
+            return null;
+         tags[ tag ] = {
+            type: type,
+            count: count,
+            offset: ( typeSize[ type ] * count <= 4 ) ? e + 8 : base + this.u32( e + 8 )
+         };
+      }
+      return tags;
+   };
+
+   this.tagString = function( t )
+   {
+      if ( !t || t.type != 2 )
+         return "";
+      var b = this.bytes( t.offset, Math.min( t.count, 256 ) );
+      var s = "";
+      for ( var i = 0; b !== null && i < b.length && b[ i ] != 0; ++i )
+         s += String.fromCharCode( b[ i ] );
+      return s;
+   };
+
+   this.tagNumber = function( t, index )
+   {
+      if ( !t )
+         return null;
+      var i = index || 0;
+      if ( i >= t.count )
+         return null;
+      switch ( t.type )
+      {
+         case 3:
+            return this.u16( t.offset + 2 * i );
+         case 4:
+            return this.u32( t.offset + 4 * i );
+         case 5:
+         {
+            var num = this.u32( t.offset + 8 * i ),
+               den = this.u32( t.offset + 8 * i + 4 );
+            return ( num !== null && den ) ? num / den : null;
+         }
+         default:
+            return null;
+      }
+   };
+}
+
+/*
+ * RAW ファイルの黒レベル [ADU] を返す。読み取れなければ null。
+ * Returns the black level [ADU] of a raw file, or null if it cannot be read.
+ */
+function ltmfReadBlackLevel( path )
+{
+   var reader = new LTMFByteReader( path );
+   var blackLevel = null;
+   try
+   {
+      var make = "";
+
+      var absorb = function( tags, base )
+      {
+         var j, k;
+         if ( tags[ 0x010F ] && make.length == 0 )
+            make = reader.tagString( tags[ 0x010F ] );
+
+         // DNG: RAW 本体の IFD (NewSubfileType = 0) の BlackLevel。SubIFD にあることが多い
+         // DNG: BlackLevel of the raw IFD (NewSubfileType = 0), usually found in a SubIFD
+         if ( blackLevel === null )
+         {
+            var ifds = [ tags ];
+            if ( tags[ 0x014A ] )
+               for ( k = 0; k < Math.min( tags[ 0x014A ].count, 8 ); ++k )
+               {
+                  var subOffset = reader.tagNumber( tags[ 0x014A ], k );
+                  var sub = ( subOffset !== null ) ? reader.readIFD( base, subOffset ) : null;
+                  if ( sub !== null )
+                     ifds.push( sub );
+               }
+            for ( k = 0; k < ifds.length && blackLevel === null; ++k )
+               if ( ifds[ k ][ 0xC61A ] && ( !ifds[ k ][ 0x00FE ] || reader.tagNumber( ifds[ k ][ 0x00FE ] ) == 0 ) )
+               {
+                  var levels = [];
+                  for ( j = 0; j < Math.min( ifds[ k ][ 0xC61A ].count, 16 ); ++j )
+                     levels.push( reader.tagNumber( ifds[ k ][ 0xC61A ], j ) );
+                  blackLevel = ltmfPlausibleBlackLevel( levels );
+               }
+         }
+
+         // Canon: MakerNote (TIFF 先頭基準の IFD) の ColorData にある PerChannelBlackLevel の平均
+         // Canon: mean of PerChannelBlackLevel in the ColorData record of the MakerNote
+         if ( blackLevel === null && tags[ 0x927C ] && /^canon/i.test( make ) )
+         {
+            var makerNote = reader.readIFD( base, tags[ 0x927C ].offset - base );
+            if ( makerNote !== null && makerNote[ 0x4001 ] && makerNote[ 0x4001 ].type == 3 )
+            {
+               var colorData = makerNote[ 0x4001 ];
+               var version = reader.tagNumber( colorData, 0 );
+               if ( version !== null && version >= 0x8000 )
+                  version -= 0x10000;
+               var index = ltmfCanonBlackLevelIndex( colorData.count, version );
+               if ( index !== null && index + 4 <= colorData.count )
+               {
+                  var channels = [];
+                  for ( j = 0; j < 4; ++j )
+                     channels.push( reader.tagNumber( colorData, index + j ) );
+                  blackLevel = ltmfPlausibleBlackLevel( channels );
+               }
+            }
+         }
+      };
+
+      // ファイル先頭から TIFF ヘッダを探す(CR3 や RAF は途中に TIFF 構造を持つ)
+      // Look for TIFF headers from the start of the file (CR3 and RAF embed them further in).
+      var found = 0;
+      for ( var i = 0; i + 8 <= reader.headLength && found < 8 && blackLevel === null; ++i )
+      {
+         var b0 = reader.head.at( i ),
+            b1 = reader.head.at( i + 1 );
+         var littleEndian;
+         if ( b0 == 0x49 && b1 == 0x49 )
+            littleEndian = true;
+         else if ( b0 == 0x4D && b1 == 0x4D )
+            littleEndian = false;
+         else
+            continue;
+         var m0 = reader.head.at( i + 2 ),
+            m1 = reader.head.at( i + 3 );
+         // TIFF (42), Panasonic RW2 ("U"), Olympus ORF ("RO" / "RS")
+         var isTiff = littleEndian ? ( ( m1 == 0 && ( m0 == 0x2A || m0 == 0x55 ) ) || ( m0 == 0x52 && ( m1 == 0x4F || m1 == 0x53 ) ) ) :
+            ( ( m0 == 0 && m1 == 0x2A ) || ( m0 == 0x4F && m1 == 0x52 ) );
+         if ( !isTiff )
+            continue;
+         reader.littleEndian = littleEndian;
+         var ifd0 = reader.u32( i + 4 );
+         if ( ifd0 === null || ifd0 < 8 || i + ifd0 >= reader.size )
+            continue;
+         var tags = reader.readIFD( i, ifd0 );
+         if ( tags === null )
+            continue;
+         ++found;
+         absorb( tags, i );
+         if ( tags[ 0x8769 ] )
+         {
+            var exifIFD = reader.readIFD( i, reader.tagNumber( tags[ 0x8769 ] ) );
+            if ( exifIFD !== null )
+               absorb( exifIFD, i );
+         }
+      }
+   }
+   finally
+   {
+      reader.close();
+   }
+   return blackLevel;
+}
+
+// ----------------------------------------------------------------------------
 // ファイル入出力 / File input and output
 // ----------------------------------------------------------------------------
 
@@ -1055,7 +1412,7 @@ function ltmfIIConstant( name )
 function LTMFEngine( parameters )
 {
    this.parameters = parameters;
-   this.results = []; // { path, group, frames }
+   this.results = []; // { path, type: "flat" | "bias", group, frames }
 
    this.checkAbort = function()
    {
@@ -1220,7 +1577,7 @@ function LTMFEngine( parameters )
     * マスターフラットの FITS キーワードを作る。
     * Builds the FITS keywords of the master flat.
     */
-   this.masterKeywords = function( group, p, nFrames )
+   this.masterKeywords = function( group, p, nFrames, blackLevel )
    {
       var P = this.parameters;
       var first = group.first;
@@ -1243,8 +1600,8 @@ function LTMFEngine( parameters )
       keywords.push( new FITSKeyword( "COMMENT", "", "Generated with " + LTMF_TITLE + " v" + LTMF_VERSION ) );
       keywords.push( new FITSKeyword( "HISTORY", "", LTMF_TITLE + ".frames: " + nFrames ) );
       keywords.push( new FITSKeyword( "HISTORY", "", LTMF_TITLE + ".cfaPeriod: " + p ) );
-      keywords.push( new FITSKeyword( "HISTORY", "", LTMF_TITLE + ".darkMode: " + [ "none", "master file", "constant" ][ P.darkMode ] +
-         ( ( P.darkMode == 2 ) ? " (" + P.pedestalADU + " ADU)" : "" ) ) );
+      keywords.push( new FITSKeyword( "HISTORY", "", LTMF_TITLE + ".darkMode: " + [ "none", "master file", "black level" ][ P.darkMode ] +
+         ( ( P.darkMode == 2 ) ? " (" + blackLevel.toFixed( 1 ) + " ADU)" : "" ) ) );
       keywords.push( new FITSKeyword( "HISTORY", "", LTMF_TITLE + ".starMask: " +
          ( P.maskStars ? "sigma=" + P.maskSigma + " grow=" + P.maskGrow : "disabled" ) ) );
       keywords.push( new FITSKeyword( "HISTORY", "", LTMF_TITLE + ".combination: " +
@@ -1252,6 +1609,98 @@ function LTMFEngine( parameters )
       keywords.push( new FITSKeyword( "HISTORY", "", LTMF_TITLE + ".smoothing: " +
          ( P.smooth ? "scale=" + P.smoothScale + " px" : "disabled" ) ) );
       return keywords;
+   };
+
+   /*
+    * 黒レベル(定数)モードで使う値 [ADU] を決める。
+    * 入力値が 0 より大きければそれを、0 なら RAW の EXIF から読んだ値のグループ平均を使う
+    * (WBPP はグループ全体に 1 枚のバイアスを使うので、フラットの計算もそれに合わせる)。
+    *
+    * Decides the value [ADU] used in black level (constant) mode: the entered value
+    * if greater than 0, otherwise the group mean of the EXIF black levels (WBPP uses
+    * a single bias for the whole group, so the flat is computed the same way).
+    */
+   this.groupBlackLevel = function( group )
+   {
+      var P = this.parameters;
+      if ( P.pedestalADU > 0 )
+      {
+         console.writeln( tr( "logBlackManual", P.pedestalADU ) );
+         return P.pedestalADU;
+      }
+      var sum = 0,
+         count = 0;
+      for ( var i = 0; i < group.headers.length; ++i )
+      {
+         if ( !group.headers[ i ].isRaw )
+            continue;
+         var level = null;
+         try
+         {
+            level = ltmfReadBlackLevel( group.headers[ i ].path );
+         }
+         catch ( x )
+         {}
+         if ( level !== null )
+         {
+            sum += level;
+            ++count;
+         }
+      }
+      if ( count == 0 )
+         throw new Error( tr( "errNoBlack", group.name ) );
+      var mean = Math.round( 10 * sum / count ) / 10;
+      console.writeln( tr( "logBlackExif", mean.toFixed( 1 ), count, group.headers.length ) );
+      return mean;
+   };
+
+   /*
+    * 合成マスターバイアス(黒レベルの定数画像)を書き出す。
+    * 同じビニング・サイズ・黒レベルのものは 1 回だけ書く。
+    * Writes the synthetic master bias (a constant image of the black level),
+    * once per binning, size and black level.
+    */
+   this.writeSyntheticBias = function( group, blackLevel )
+   {
+      var P = this.parameters;
+      var first = group.first;
+      var path = P.outputDir + "/masterBias_BIN-" + first.binning + "_" + first.width + "x" + first.height + "_" +
+         blackLevel.toFixed( 0 ) + "ADU.xisf";
+      var i;
+      for ( i = 0; i < this.results.length; ++i )
+         if ( this.results[ i ].path == path )
+            return;
+
+      var keywords = [];
+      var inherit = [ "INSTRUME", "GAIN", "OFFSET", "EGAIN", "ISOSPEED", "READOUTM", "ROWORDER", "XBAYROFF", "YBAYROFF", "BAYERPAT" ];
+      for ( i = 0; i < first.keywords.length; ++i )
+         if ( inherit.indexOf( first.keywords[ i ].name ) >= 0 )
+            keywords.push( first.keywords[ i ] );
+      keywords.push( new FITSKeyword( "IMAGETYP", "Master Bias", "Type of image" ) );
+      keywords.push( new FITSKeyword( "XBINNING", String( first.binning ), "Binning factor, horizontal axis" ) );
+      keywords.push( new FITSKeyword( "YBINNING", String( first.binning ), "Binning factor, vertical axis" ) );
+      keywords.push( new FITSKeyword( "BLKLEVEL", blackLevel.toFixed( 1 ), "Black level (16-bit ADU)" ) );
+      keywords.push( new FITSKeyword( "COMMENT", "", "Synthetic master bias: constant black level" ) );
+      keywords.push( new FITSKeyword( "COMMENT", "", "Generated with " + LTMF_TITLE + " v" + LTMF_VERSION ) );
+
+      var image = ltmfNewFloatImage( first.width, first.height );
+      try
+      {
+         image.fill( blackLevel / 65535 );
+         ltmfWriteImage( path, image, keywords, ( this.cfaPeriod( first ) > 1 ) ? first.cfaPattern : null );
+      }
+      finally
+      {
+         image.free();
+      }
+      console.noteln( tr( "logBias", "<raw>" + path + "</raw>" ) );
+      this.results.push(
+      {
+         path: path,
+         type: "bias",
+         group: group.name,
+         frames: 0
+      } );
    };
 
    /*
@@ -1265,7 +1714,8 @@ function LTMFEngine( parameters )
       var w = first.width,
          h = first.height;
       var p = this.cfaPeriod( first );
-      var pedestal = ( P.darkMode == 2 ) ? P.pedestalADU / 65535 : 0;
+      var blackLevel = ( P.darkMode == 2 ) ? this.groupBlackLevel( group ) : 0;
+      var pedestal = blackLevel / 65535;
 
       // 正規化後の背景レベル。周辺減光の中心部(背景の最大 2.5 倍)まで [0,1] に収まる。
       // Background level after normalization; leaves headroom (up to 2.5x) for the bright centre.
@@ -1477,14 +1927,20 @@ function LTMFEngine( parameters )
          // 5) 書き出し / Write
          var cfaPattern = ( p > 1 ) ? first.cfaPattern : null;
          var outPath = P.outputDir + "/" + P.prefix + "_" + group.name.replace( /[^A-Za-z0-9_.\-]/g, "_" ) + ".xisf";
-         ltmfWriteImage( outPath, stack, this.masterKeywords( group, p, tempPaths.length ), cfaPattern );
+         ltmfWriteImage( outPath, stack, this.masterKeywords( group, p, tempPaths.length, blackLevel ), cfaPattern );
          console.noteln( tr( "logWritten", "<raw>" + outPath + "</raw>" ) );
          this.results.push(
          {
             path: outPath,
+            type: "flat",
             group: group.name,
             frames: tempPaths.length
          } );
+
+         // フラットの計算で引いたのと同じ黒レベルの合成マスターバイアス
+         // The synthetic master bias with the same black level that was removed for the flat
+         if ( P.darkMode == 2 && P.writeBias && blackLevel > 0 )
+            this.writeSyntheticBias( group, blackLevel );
       }
       finally
       {
@@ -1569,7 +2025,11 @@ function LTMFEngine( parameters )
          console.abortEnabled = false;
       }
 
-      console.noteln( "<end><cbr><br>" + tr( "logDone", this.results.length, ( ( Date.now() - start ) / 1000 ).toFixed( 1 ) ) );
+      var nFlats = 0;
+      for ( var r = 0; r < this.results.length; ++r )
+         if ( this.results[ r ].type == "flat" )
+            ++nFlats;
+      console.noteln( "<end><cbr><br>" + tr( "logDone", nFlats, ( ( Date.now() - start ) / 1000 ).toFixed( 1 ) ) );
       return this.results;
    };
 }
@@ -1793,6 +2253,17 @@ function LTMFDialog( parameters )
       P.pedestalADU = value;
    };
 
+   this.pedestalSpin.toolTip = tr( "biasTip" );
+
+   this.biasCheck = new CheckBox( this );
+   this.biasCheck.text = tr( "writeBias" );
+   this.biasCheck.checked = P.writeBias;
+   this.biasCheck.toolTip = tr( "biasTip" );
+   this.biasCheck.onCheck = function( checked )
+   {
+      P.writeBias = checked;
+   };
+
    this.darkPathLabel = makeLabel( this, tr( "darkPath" ) );
    this.pedestalLabel = makeLabel( this, tr( "pedestal" ) );
 
@@ -1804,6 +2275,7 @@ function LTMFDialog( parameters )
    this.darkGroup.sizer.add( row( makeLabel( this, tr( "darkMode" ) ), this.darkCombo, null ) );
    this.darkGroup.sizer.add( row( this.darkPathLabel, this.darkEdit, this.darkButton ) );
    this.darkGroup.sizer.add( row( this.pedestalLabel, this.pedestalSpin, null ) );
+   this.darkGroup.sizer.add( row( labelWidth + 6, this.biasCheck, null ) );
 
    // --- センサー / sensor
 
@@ -2011,7 +2483,7 @@ function LTMFDialog( parameters )
    this.updateControls = function()
    {
       self.darkPathLabel.enabled = self.darkEdit.enabled = self.darkButton.enabled = ( P.darkMode == 1 );
-      self.pedestalLabel.enabled = self.pedestalSpin.enabled = ( P.darkMode == 2 );
+      self.pedestalLabel.enabled = self.pedestalSpin.enabled = self.biasCheck.enabled = ( P.darkMode == 2 );
       self.maskSigmaControl.enabled = self.maskGrowLabel.enabled = self.maskGrowSpin.enabled = P.maskStars;
       self.sigmaLowControl.enabled = self.sigmaHighControl.enabled = ( P.combination == 0 );
       self.smoothLabel.enabled = self.smoothSpin.enabled = P.smooth;
@@ -2094,11 +2566,15 @@ function ltmfMain()
       return;
    }
 
+   var hasBias = false;
    var list = "<ul>";
    for ( var i = 0; i < results.length; ++i )
    {
-      list += "<li>" + File.extractNameAndExtension( results[ i ].path ) + " (" + results[ i ].frames + ")</li>";
-      if ( parameters.openResult )
+      list += "<li>" + File.extractNameAndExtension( results[ i ].path ) +
+         ( ( results[ i ].type == "flat" ) ? " (" + results[ i ].frames + ")" : "" ) + "</li>";
+      if ( results[ i ].type == "bias" )
+         hasBias = true;
+      else if ( parameters.openResult )
          try
          {
             var windows = ImageWindow.open( results[ i ].path );
@@ -2109,7 +2585,7 @@ function ltmfMain()
          {}
    }
    list += "</ul>";
-   ( new MessageBox( tr( "doneText", results.length, list ), tr( "doneTitle" ), StdIcon_Information, StdButton_Ok ) ).execute();
+   ( new MessageBox( tr( "doneText", results.length, list ) + ( hasBias ? tr( "doneBias" ) : "" ), tr( "doneTitle" ), StdIcon_Information, StdButton_Ok ) ).execute();
 }
 
 #ifndef LTMF_NO_MAIN
